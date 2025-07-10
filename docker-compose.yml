@@ -1,33 +1,98 @@
 version: '3.8'
 
 services:
-  db:
-    image: postgres:14
-    container_name: postgres_subscriptions
-    environment:
-      POSTGRES_DB: ${DATABASE_NAME}
-      POSTGRES_USER: ${DATABASE_USER}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWD}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
   web:
     build: .
-    container_name: django_subscriptions
-    command: sh -c "
-      python manage.py makemigrations &&
-      python manage.py migrate &&
-      python manage.py runserver 0.0.0.0:8000"
+    command: >
+      sh -c "python manage.py makemigrations
+      && python manage.py migrate
+      && echo yes | python manage.py collectstatic
+      && gunicorn candelasoft.wsgi:application --bind 0.0.0.0:8080"
     volumes:
-      - .:/app
+      - ./:/code/
+      - static_volume:/code/static
+      - media_volume:/code/media
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+    networks:
+      - candelasoft_networks
+
+  redis:
+    image: redis:alpine
+    command: redis-server
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - candelasoft_networks
+
+  worker:
+    build: .
+    command: celery -A candelasoft worker --loglevel=info -Q celery,default
+    volumes:
+      - ./:/code/
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    networks:
+      - candelasoft_networks
+
+  celery-beat:
+    build: .
+    command: >
+      celery -A candelasoft beat
+      --loglevel=info
+      --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - ./:/code/
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    networks:
+      - candelasoft_networks
+
+  flower:
+    build: .
+    command: >
+      celery -A candelasoft flower
+      --address=0.0.0.0
+      --port=5555
+      --loglevel=info
+    volumes:
+      - ./:/code/
+    ports:
+      - "5555:5555"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    networks:
+      - candelasoft_networks
+
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile-nginx
+    volumes:
+      - static_volume:/code/static
+      - media_volume:/code/media
     ports:
       - "8000:8000"
-    env_file:
-      - .env
     depends_on:
-      - db
+      - web
+    networks:
+      - candelasoft_networks
 
 volumes:
-  postgres_data:
+  static_volume:
+  media_volume:
+  redis_data:
+
+networks:
+  candelasoft_networks:
+    driver: bridge

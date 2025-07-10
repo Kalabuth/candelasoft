@@ -1,22 +1,34 @@
-FROM python:3.11-slim
+# Pull official base image
+FROM python:3.12-slim AS builder
 
-RUN apt-get update \
-  && apt-get install -y curl build-essential libpq-dev gcc \
-  && apt-get clean
+# Upgrade pip and install Poetry for managing dependencies
+RUN apt-get update && \
+    apt-get install -y postgresql-client && \
+    pip install --upgrade pip && \
+    pip install --no-cache-dir poetry
 
-WORKDIR /app
+COPY pyproject.toml poetry.lock ./
+RUN poetry config virtualenvs.create false
+RUN poetry install
 
-ENV POETRY_VERSION=1.8.2
-RUN curl -sSL https://install.python-poetry.org | python3 -
-ENV PATH="/root/.local/bin:$PATH"
+# Runtime stage
+FROM python:3.12-slim AS runtime
 
-COPY pyproject.toml poetry.lock* ./
+# Install system dependencies
+RUN apt-get update && apt-get install -y
 
-RUN poetry config virtualenvs.create false \
-  && poetry install --no-interaction --no-ansi
+# Copy the virtual environment from the builder stage
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
 
+# Create a non-root user to run the application
+RUN useradd -m appuser
+
+WORKDIR /code
 COPY . .
 
-EXPOSE 8000
+RUN mkdir -p /code/static /code/media
 
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+# Ensure all files belong to the non-root user
+RUN chown -R appuser:appuser /code /code/static /code/media  /usr/local/lib/python3.12/site-packages
+USER appuser
